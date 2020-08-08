@@ -11,16 +11,29 @@ TOUCH_DOWN = 1
 TOUCH_MOVE = 2
 SET_SCREEN_SIZE = 9
 
+CLICK_COORDS = (0, 0)
+CAN_MOVE = False
+SCROLLING = False
+
 def run_cmd(cmd):
 	return os.popen(cmd).read()
 
-def get_bounds():
+def update_bounds():
+
+	global BOUNDS
 
 	cmd = "osascript -e 'tell application \"QuickTime Player\" to get the bounds of the front window'"
 
 	bounds = run_cmd(cmd)
 
-	return tuple(int(i) for i in bounds.split(", "))
+	BOUNDS = tuple(int(i) for i in bounds.split(", "))
+
+BOUNDS = ()
+update_bounds()
+
+def get_bounds():
+
+	return BOUNDS
 
 def set_bounds(x1, y1, x2, y2):
 
@@ -30,7 +43,7 @@ def set_bounds(x1, y1, x2, y2):
 
 def is_qt_focused():
 
-	return run_cmd("osascript -e 'frontmost of application \"QuickTime Player\"'") == "true"
+	return "true" in run_cmd("osascript -e 'frontmost of application \"QuickTime Player\"'")
 
 def focus_qt():
 
@@ -46,60 +59,119 @@ def select_camera(cam_name):
 			click button 3 of window 1
 			#To select our device
 			click menu item "{0}" of menu 1 of button 3 of window 1
+			activate
 		end tell'""".format(cam_name))
 
 def setup_qt(device_name):
 
+	# run_cmd("open -a 'QuickTime Player'")
+
+	script = """tell application "QuickTime Player"
+	    activate
+		new movie recording
+		end tell
+		"""
+
+	run_cmd("osascript -e '{0}'".format(script))
+
 	select_camera(device_name)
 
-	focus_qt()
+	# focus_qt()
 
-def clickInWindow(x, y):
+def inWindow(x, y):
 
     x1, y1, x2, y2 = get_bounds()
 
     return (x1 < x and x < x2) and (y1 < y and y < y2)
 
 def on_move(device, x, y):
-	return
-	print('Pointer moved to {0}'.format(
-		(x, y)))
+
+	# print(CAN_MOVE, CLICK_COORDS, (x, y))
+
+	if CAN_MOVE and CLICK_COORDS != (x, y):
+
+		device.send(("101"+formatSocketData(TOUCH_MOVE, 7, *rel_mouse_pos(x, y))).encode())
 
 def on_click(device, x, y, button, pressed):
 
-	if is_qt_focused():
+	global CAN_MOVE, CLICK_COORDS
 
-		print('{0} at {1}'.format(
-			'Pressed' if pressed else 'Released',
-			rel_mouse_pos(x, y)))
-
-		tap(device, *rel_mouse_pos(x, y))
-
-	if not pressed and not clickInWindow(x, y):
-	    # Stop listener
+	if not inWindow(x, y):
+		# Stop listener
 		print("Stopping Listener")
 		return False
 
+	# if is_qt_focused():
+
+		# print('{0} at {1}'.format(
+		# 	'Pressed' if pressed else 'Released',
+		# 	rel_mouse_pos(x, y)))
+
+	if pressed:
+		CLICK_COORDS = (x, y)
+		CAN_MOVE = True
+	else:
+		CAN_MOVE = False
+		tap(device, *rel_mouse_pos(x, y))
+
 def on_scroll(device, x, y, dx, dy):
-	return
-	print('Scrolled {0}'.format(
-		(x, y)))
+
+	global SCROLLING
+
+	if inWindow(x, y) and dy != 0 and not SCROLLING:
+
+		SCROLLING = True
+
+		f5_y = y-dy
+
+		device.send(("101" + formatSocketData(TOUCH_DOWN, 6, x+20, y)).encode())
+		device.send(("101" + formatSocketData(TOUCH_DOWN, 5, x-20, f5_y)).encode())
+
+		sleep(0.001)
+
+		while f5_y < y+100:
+
+			f5_y += 5
+
+			device.send(("101" + formatSocketData(TOUCH_MOVE, 5, x-20, f5_y)).encode())
+
+			sleep(0.001)
+
+		device.send(("101" + formatSocketData(TOUCH_UP, 5, x-20, f5_y)).encode())
+		device.send(("101" + formatSocketData(TOUCH_UP, 6, x+20, y)).encode())
+
+		SCROLLING = False
 
 def rel_mouse_pos(x, y):
 
 	bounds = get_bounds()
 
 	unscaled_rel_mouse = (
-					mouse.position[0] - bounds[0],
-					mouse.position[1] - bounds[1]
+					x - bounds[0],
+					y - bounds[1]
 				)
 
 	window_height = max(abs(bounds[2]-bounds[0]), abs(bounds[3]-bounds[1]))
 
-	rel_mouse = tuple(i * (736*3/window_height) for i in unscaled_rel_mouse)
+	screen_height = 736*3
+
+	scale_factor =  screen_height / window_height
+
+	if is_portrait():
+
+		rel_mouse = tuple(i*scale_factor for i in unscaled_rel_mouse)
+
+	else:
+
+		rel_mouse = (unscaled_rel_mouse[1]*scale_factor, screen_height - unscaled_rel_mouse[0]*scale_factor)
 
 	return rel_mouse
 
+def is_portrait():
+
+	bounds = get_bounds()
+
+	return abs(bounds[2]-bounds[0]) < abs(bounds[3]-bounds[1])
 
 # you can copy and paste these methods to your code
 def formatSocketData(type, index, x, y):
@@ -176,18 +248,23 @@ def tap(socket, x, y):
 
 	socket.send(("101" + formatSocketData(TOUCH_DOWN, 7, x, y)).encode())
 
-	sleep(0.1)
+	sleep(0.01)
 
 	socket.send(("101" + formatSocketData(TOUCH_UP, 7, x, y)).encode())
 
 if __name__ == "__main__":
 
-	device_name = "FaceTime HD Camera"
+	device_name = run_cmd("ideviceinfo -k DeviceName").replace("\n", "")
+	device_ip = device_name.lower().replace(" ", "-")
+
+	device_ip = ''.join([i for i in device_ip if i.isalnum() or i == "-"]) + ".local"
+
+	print("Connecting to " + device_ip + " (" + device_name + ")")
 
 	setup_qt(device_name)
 
 	device = socket.socket()
-	device.connect(("192.168.0.196", 6000))  # connect to the tweak
+	device.connect((device_ip, 6000))  # connect to the tweak
 	sleep(0.1)  # please sleep after connection.
 
 	mouse = Controller()
@@ -223,5 +300,7 @@ if __name__ == "__main__":
 		on_click=lambda *args: on_click(device, *args),
 		on_scroll=lambda *args: on_scroll(device, *args),
 		suppress=True) as listener:
+
+		print("Listener Started")
 
 		listener.join()
