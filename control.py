@@ -11,12 +11,54 @@ TOUCH_DOWN = 1
 TOUCH_MOVE = 2
 SET_SCREEN_SIZE = 9
 
+def run_cmd(cmd):
+	return os.popen(cmd).read()
+
 def get_bounds():
+
 	cmd = "osascript -e 'tell application \"QuickTime Player\" to get the bounds of the front window'"
 
-	bounds = os.popen(cmd).read()
+	bounds = run_cmd(cmd)
 
 	return tuple(int(i) for i in bounds.split(", "))
+
+def set_bounds(x1, y1, x2, y2):
+
+	cmd = "osascript -e 'tell application \"QuickTime Player\" to set the bounds of the front window to \{{0}, {1}, {2}, {3}\}'".format((x1, y1, x2, y2))
+
+	return run_cmd(cmd)
+
+def is_qt_focused():
+
+	return run_cmd("osascript -e 'frontmost of application \"QuickTime Player\"'") == "true"
+
+def focus_qt():
+
+	return run_cmd("osascript -e 'tell application \"QuickTime Player\" to activate'")
+
+def select_camera(cam_name):
+
+	# might need to add sleep later on
+
+	return run_cmd("""osascript -e '
+		tell application "System Events" to tell process "QuickTime Player"
+			#To open dialog to show available cameras
+			click button 3 of window 1
+			#To select our device
+			click menu item "{0}" of menu 1 of button 3 of window 1
+		end tell'""".format(cam_name))
+
+def setup_qt(device_name):
+
+	select_camera(device_name)
+
+	focus_qt()
+
+def clickInWindow(x, y):
+
+    x1, y1, x2, y2 = get_bounds()
+
+    return (x1 < x and x < x2) and (y1 < y and y < y2)
 
 def on_move(device, x, y):
 	return
@@ -24,13 +66,19 @@ def on_move(device, x, y):
 		(x, y)))
 
 def on_click(device, x, y, button, pressed):
-	print('{0} at {1}'.format(
-		'Pressed' if pressed else 'Released',
-		rel_mouse_pos(x, y)))
-	tap(device, *rel_mouse_pos(x, y))
-	# if not pressed:
-	#     # Stop listener
-	#     return False
+
+	if is_qt_focused():
+
+		print('{0} at {1}'.format(
+			'Pressed' if pressed else 'Released',
+			rel_mouse_pos(x, y)))
+
+		tap(device, *rel_mouse_pos(x, y))
+
+	if not pressed and not clickInWindow(x, y):
+	    # Stop listener
+		print("Stopping Listener")
+		return False
 
 def on_scroll(device, x, y, dx, dy):
 	return
@@ -134,6 +182,10 @@ def tap(socket, x, y):
 
 if __name__ == "__main__":
 
+	device_name = "FaceTime HD Camera"
+
+	setup_qt(device_name)
+
 	device = socket.socket()
 	device.connect(("192.168.0.196", 6000))  # connect to the tweak
 	sleep(0.1)  # please sleep after connection.
@@ -169,6 +221,7 @@ if __name__ == "__main__":
 	with Listener(
 		on_move=lambda *args: on_move(device, *args),
 		on_click=lambda *args: on_click(device, *args),
-		on_scroll=lambda *args: on_scroll(device, *args)) as listener:
+		on_scroll=lambda *args: on_scroll(device, *args),
+		suppress=True) as listener:
 
 		listener.join()
